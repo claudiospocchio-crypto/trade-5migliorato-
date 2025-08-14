@@ -4,16 +4,29 @@ import numpy as np
 import requests
 import ta
 from ta.trend import PSARIndicator
-from datetime import datetime, timedelta
 
 st.set_page_config("Coinbase Crypto Analysis", layout="wide")
 st.title("🤖 Coinbase Crypto Report (multi-timeframe)")
 
-# 1. Scegli crypto e timeframe
-coin_pairs = [
-    "BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "AVAX-USD", "XRP-USD", "DOGE-USD", "MATIC-USD", "NEAR-USD", "ARB-USD"
-]
-product_id = st.selectbox("Scegli coppia Coinbase", coin_pairs, index=0)
+# Scarica la lista delle coppie disponibili da Coinbase
+@st.cache_data(ttl=3600)
+def get_coinbase_products():
+    url = "https://api.exchange.coinbase.com/products"
+    resp = requests.get(url)
+    data = resp.json()
+    # Prendi solo le coppie contro USD
+    pairs = [p["id"] for p in data if p["quote_currency"] == "USD" and p["trading_disabled"] is False]
+    return sorted(pairs)
+
+coin_pairs = get_coinbase_products()
+search = st.text_input("Cerca simbolo crypto (es: BTC, ETH, SHIB...)", "")
+if search:
+    filtered_pairs = [c for c in coin_pairs if search.upper() in c]
+else:
+    filtered_pairs = coin_pairs
+if not filtered_pairs:
+    st.warning("Nessuna crypto trovata per la ricerca inserita.")
+product_id = st.selectbox("Scegli coppia Coinbase", filtered_pairs, index=0 if filtered_pairs else None)
 
 _tf_map = {
     "15 minuti": 900,
@@ -35,11 +48,9 @@ def get_coinbase_ohlc(product_id, granularity, n_candles):
         "granularity": granularity,
         "limit": n_candles
     }
-    # Coinbase accetta solo 300 candele max per richiesta
     resp = requests.get(url, params=params)
     if resp.status_code != 200:
         raise Exception(f"Errore Coinbase API: {resp.text}")
-    # [time, low, high, open, close, volume]
     data = resp.json()
     df = pd.DataFrame(data, columns=["time", "low", "high", "open", "close", "volume"])
     df = df.sort_values("time")
@@ -65,7 +76,7 @@ if st.button("Scarica e analizza"):
         df["ADX"] = ta.trend.adx(df["High"], df["Low"], df["Close"], window=14)
         df["+DI"] = ta.trend.adx_pos(df["High"], df["Low"], df["Close"], window=14)
         df["-DI"] = ta.trend.adx_neg(df["High"], df["Low"], df["Close"], window=14)
-        # PSAR con metodo corretto
+        # PSAR
         psar = PSARIndicator(high=df["High"], low=df["Low"], close=df["Close"])
         df["PSAR"] = psar.psar()
         df["Momentum"] = ta.momentum.roc(df["Close"], window=10)
@@ -73,7 +84,7 @@ if st.button("Scarica e analizza"):
         df["MACD_signal"] = ta.trend.macd_signal(df["Close"])
         df = df.dropna()
 
-        # Trend e segnali (stile Finora)
+        # Trend e segnali
         last = df.iloc[-1]
         last_prev = df.iloc[-2]
         bull_conds = [
@@ -177,6 +188,6 @@ if st.button("Scarica e analizza"):
     else:
         st.warning("Dati insufficienti o errore nel download.")
 else:
-    st.info("Seleziona crypto, timeframe e premi Scarica e analizza.")
+    st.info("Cerca la crypto, seleziona timeframe e premi Scarica e analizza.")
 
 st.caption("⚠️ Questo report è generato automaticamente dall’AI e NON è un consiglio finanziario. Verifica sempre dati e strategia.")
