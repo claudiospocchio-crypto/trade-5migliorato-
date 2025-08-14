@@ -3,12 +3,11 @@ import pandas as pd
 import ta
 
 def add_fibonacci_levels(df):
-    # Prendiamo ultimi 100 periodi per la swing high/low
     lookback = 100 if len(df) > 100 else len(df)
     max_price = df["High"].tail(lookback).max()
     min_price = df["Low"].tail(lookback).min()
     diff = max_price - min_price
-    for level, ratio in zip(["Fibo_0.236","Fibo_0.382","Fibo_0.5","Fibo_0.618","Fibo_0.786"], [0.236,0.382,0.5,0.618,0.786]):
+    for level, ratio in zip(["Fibo_0.236", "Fibo_0.382", "Fibo_0.5", "Fibo_0.618", "Fibo_0.786"], [0.236, 0.382, 0.5, 0.618, 0.786]):
         df[level] = max_price - ratio * diff
     return df
 
@@ -34,7 +33,6 @@ def add_mfi(df):
     return df
 
 def add_fisher(df):
-    # Fisher Transform custom
     length = 10
     hl2 = (df["High"] + df["Low"]) / 2
     min_low = hl2.rolling(length).min()
@@ -45,4 +43,12 @@ def add_fisher(df):
     for i in range(1, len(value)):
         fish.iloc[i] = 0.5 * value.iloc[i] + 0.5 * fish.iloc[i-1]
     df["Fisher"] = fish
+    return df
+
+def add_trading_signals(df):
+    conditions_buy = (df['RSI'] < 30) & (df['PSAR'] < df['Close'])
+    conditions_sell = (df['RSI'] > 70) & (df['PSAR'] > df['Close'])
+    df['Signal'] = 'HOLD'
+    df.loc[conditions_buy, 'Signal'] = 'BUY'
+    df.loc[conditions_sell, 'Signal'] = 'SELL'
     return df
