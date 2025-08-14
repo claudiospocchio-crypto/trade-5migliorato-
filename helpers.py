@@ -46,9 +46,33 @@ def add_fisher(df):
     return df
 
 def add_trading_signals(df):
-    conditions_buy = (df['RSI'] < 30) & (df['PSAR'] < df['Close'])
-    conditions_sell = (df['RSI'] > 70) & (df['PSAR'] > df['Close'])
-    df['Signal'] = 'HOLD'
-    df.loc[conditions_buy, 'Signal'] = 'BUY'
-    df.loc[conditions_sell, 'Signal'] = 'SELL'
+    df["Signal"] = "HOLD"
+    df["TakeProfit"] = np.nan
+    df["StopLoss"] = np.nan
+
+    # Condizioni BUY
+    cond_buy = (
+        (df["RSI"] < 35) &
+        (df["PSAR"] < df["Close"]) &
+        (df["ADX"] > 20) & (df["+DI"] > df["-DI"]) &
+        (df["MFI"] < 35) &
+        (df["Fisher"] > df["Fisher"].shift(1))
+    )
+    # Condizioni SELL
+    cond_sell = (
+        (df["RSI"] > 65) &
+        (df["PSAR"] > df["Close"]) &
+        (df["ADX"] > 20) & (df["-DI"] > df["+DI"]) &
+        (df["MFI"] > 65) &
+        (df["Fisher"] < df["Fisher"].shift(1))
+    )
+    df.loc[cond_buy, "Signal"] = "BUY"
+    df.loc[cond_sell, "Signal"] = "SELL"
+    # Take Profit e Stop Loss (solo per segnali)
+    buy_idx = df.index[df["Signal"] == "BUY"]
+    sell_idx = df.index[df["Signal"] == "SELL"]
+    df.loc[buy_idx, "TakeProfit"] = df.loc[buy_idx, "Close"] * 1.03
+    df.loc[buy_idx, "StopLoss"] = df.loc[buy_idx, "Close"] * 0.98
+    df.loc[sell_idx, "TakeProfit"] = df.loc[sell_idx, "Close"] * 0.97
+    df.loc[sell_idx, "StopLoss"] = df.loc[sell_idx, "Close"] * 1.02
     return df
