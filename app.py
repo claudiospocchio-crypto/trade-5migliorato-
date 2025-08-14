@@ -1,51 +1,63 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from pycoingecko import CoinGeckoAPI
+import requests
 import ta
-from datetime import datetime
+from datetime import datetime, timedelta
 
-st.set_page_config("Finora-Style Crypto Analysis", layout="wide")
-st.title("🤖 Finora Style Crypto Report (by AI Copilot)")
+st.set_page_config("Coinbase Crypto Analysis", layout="wide")
+st.title("🤖 Coinbase Crypto Report (multi-timeframe)")
 
-# --- Scarica dati CoinGecko ---
-cg = CoinGeckoAPI()
-crypto_list = cg.get_coins_list()
-crypto_names = {c['id']: f"{c['symbol'].upper()} - {c['name']}" for c in crypto_list}
-crypto_id = st.selectbox("Scegli criptovaluta", options=list(crypto_names.keys()), format_func=lambda x: crypto_names[x], index=crypto_list.index(next(c for c in crypto_list if c["id"] == "bitcoin")))
+# 1. Scegli crypto e timeframe
+coin_pairs = [
+    "BTC-USD", "ETH-USD", "SOL-USD", "ADA-USD", "AVAX-USD", "XRP-USD", "DOGE-USD", "MATIC-USD", "NEAR-USD", "ARB-USD"
+]
+product_id = st.selectbox("Scegli coppia Coinbase", coin_pairs, index=0)
 
-n_days = st.slider("Quanti giorni di storico?", min_value=1, max_value=90, value=14)
-interval = st.selectbox("Timeframe", ["hourly", "daily"], index=0)
+_tf_map = {
+    "15 minuti": 900,
+    "1 ora": 3600,
+    "6 ore": 21600,
+    "12 ore": 43200,
+    "1 giorno": 86400,
+    "3 giorni": 259200,
+    "1 settimana": 604800
+}
+tf_label = st.selectbox("Timeframe", list(_tf_map.keys()), index=0)
+granularity = _tf_map[tf_label]
 
-df = None
-if st.button("Analizza ora"):
-    with st.spinner("Scarico dati da CoinGecko..."):
-        # Fix CoinGecko API: interval must be "daily" if n_days > 90, else "hourly" or "daily"
-        if n_days > 90:
-            interval = "daily"
-        elif n_days <= 90 and interval not in ["hourly", "daily"]:
-            interval = "hourly"
+n_candles = st.slider("Quante candele di storico?", min_value=30, max_value=300, value=120)
+
+def get_coinbase_ohlc(product_id, granularity, n_candles):
+    url = f"https://api.exchange.coinbase.com/products/{product_id}/candles"
+    params = {
+        "granularity": granularity,
+        "limit": n_candles
+    }
+    # Coinbase accetta solo 300 candele max per richiesta
+    resp = requests.get(url, params=params)
+    if resp.status_code != 200:
+        raise Exception(f"Errore Coinbase API: {resp.text}")
+    # [time, low, high, open, close, volume]
+    data = resp.json()
+    df = pd.DataFrame(data, columns=["time", "low", "high", "open", "close", "volume"])
+    df = df.sort_values("time")
+    df["Date"] = pd.to_datetime(df["time"], unit="s")
+    df.set_index("Date", inplace=True)
+    df = df[["open", "high", "low", "close", "volume"]]
+    df.columns = ["Open", "High", "Low", "Close", "Volume"]
+    return df
+
+if st.button("Scarica e analizza"):
+    with st.spinner("Scarico dati da Coinbase..."):
         try:
-            data = cg.get_coin_market_chart_by_id(id=crypto_id, vs_currency='usd', days=n_days, interval=interval)
+            df = get_coinbase_ohlc(product_id, granularity, n_candles)
         except Exception as e:
-            st.error(f"Errore CoinGecko: {e}\nProva a cambiare il timeframe o riduci i giorni di storico.")
+            st.error(str(e))
             df = None
 
-    if df is None and 'data' in locals():
-        prices = pd.DataFrame(data['prices'], columns=['timestamp', 'price'])
-        prices['Date'] = pd.to_datetime(prices['timestamp'], unit='ms')
-        prices.set_index('Date', inplace=True)
-        df = prices.resample('1H' if interval == 'hourly' else '1D').agg({'price':['first','max','min','last']}).dropna()
-        df.columns = ['Open','High','Low','Close']
-        if 'total_volumes' in data and len(data['total_volumes']) == len(prices):
-            volumes = pd.DataFrame(data['total_volumes'], columns=['timestamp', 'volume'])
-            volumes['Date'] = pd.to_datetime(volumes['timestamp'], unit='ms')
-            volumes.set_index('Date', inplace=True)
-            df['Volume'] = volumes.resample('1H' if interval == 'hourly' else '1D').sum()['volume']
-        else:
-            df['Volume'] = np.nan
-
-        # Indicatori principali
+    if df is not None and len(df) > 20:
+        # Indicatori
         df["RSI"] = ta.momentum.rsi(df["Close"], window=14)
         df["MFI"] = ta.volume.money_flow_index(df["High"], df["Low"], df["Close"], df["Volume"], window=14)
         df["ADX"] = ta.trend.adx(df["High"], df["Low"], df["Close"], window=14)
@@ -53,44 +65,28 @@ if st.button("Analizza ora"):
         df["-DI"] = ta.trend.adx_neg(df["High"], df["Low"], df["Close"], window=14)
         df["PSAR"] = ta.trend.psar(df["High"], df["Low"], df["Close"])
         df["Momentum"] = ta.momentum.roc(df["Close"], window=10)
-        # Fisher: uso KAMA per simulazione, non c'è Fisher nativo in ta
-        df["Fisher"] = ta.momentum.kama(df["Close"], window=10)
-        macd = ta.trend.macd(df["Close"])
-        macd_signal = ta.trend.macd_signal(df["Close"])
-        df["MACD"] = macd
-        df["MACD_signal"] = macd_signal
+        df["MACD"] = ta.trend.macd(df["Close"])
+        df["MACD_signal"] = ta.trend.macd_signal(df["Close"])
+        df = df.dropna()
 
-        # Livelli swing
-        last_high = df["High"][-30:].max()
-        last_low = df["Low"][-30:].min()
-        last_eq = (last_high + last_low) / 2
-        last_close = df["Close"].iloc[-1]
-        last_rsi = df["RSI"].iloc[-1]
-        last_adx = df["ADX"].iloc[-1]
-        last_mfi = df["MFI"].iloc[-1]
-        last_psar = df["PSAR"].iloc[-1]
-        last_macd = df["MACD"].iloc[-1]
-        last_macd_signal = df["MACD_signal"].iloc[-1]
-        last_fisher = df["Fisher"].iloc[-1]
-        last_fisher_prev = df["Fisher"].iloc[-2]
-        last_momentum = df["Momentum"].iloc[-1]
-
-        # Trend detection (semplice)
+        # Trend e segnali (stile Finora)
+        last = df.iloc[-1]
+        last_prev = df.iloc[-2]
         bull_conds = [
-            last_macd > last_macd_signal,
-            last_rsi > 55,
-            last_adx > 20 and df["+DI"].iloc[-1] > df["-DI"].iloc[-1],
-            last_mfi < 60,
-            last_psar < last_close,
-            last_fisher > last_fisher_prev
+            last["MACD"] > last["MACD_signal"],
+            last["RSI"] > 55,
+            last["ADX"] > 20 and last["+DI"] > last["-DI"],
+            last["MFI"] < 60,
+            last["PSAR"] < last["Close"],
+            last["Momentum"] > last_prev["Momentum"]
         ]
         bear_conds = [
-            last_macd < last_macd_signal,
-            last_rsi < 45,
-            last_adx > 20 and df["+DI"].iloc[-1] < df["-DI"].iloc[-1],
-            last_mfi > 40,
-            last_psar > last_close,
-            last_fisher < last_fisher_prev
+            last["MACD"] < last["MACD_signal"],
+            last["RSI"] < 45,
+            last["ADX"] > 20 and last["+DI"] < last["-DI"],
+            last["MFI"] > 40,
+            last["PSAR"] > last["Close"],
+            last["Momentum"] < last_prev["Momentum"]
         ]
         if sum(bull_conds) >= 4:
             trend = "📈 Rialzista"
@@ -103,6 +99,7 @@ if st.button("Analizza ora"):
             signal = "🟡 **Attendere** (wait)"
 
         # Take Profit e Stop Loss
+        last_close = last["Close"]
         if "BUY" in signal:
             take_profit = last_close * 1.03
             stop_loss = last_close * 0.98
@@ -113,18 +110,19 @@ if st.button("Analizza ora"):
             take_profit = np.nan
             stop_loss = np.nan
 
-        # Volumi (simulati, CoinGecko non fornisce breakdown buy/sell)
-        vol_sell = np.random.uniform(60, 99) if sum(bear_conds) >= 4 else np.random.uniform(10, 50)
-        vol_buy = 100 - vol_sell
+        # Livelli swing
+        last_high = df["High"][-30:].max()
+        last_low = df["Low"][-30:].min()
+        last_eq = (last_high + last_low) / 2
 
-        # --- REPORT GENERATION ---
+        # Report
         report = f"""
 🔍 **Valutazione Generale:**
 
-- Il prezzo attuale di **{crypto_names[crypto_id]}** è **{last_close:.4f} USD**, vicino al livello di equilibrio dell’ultimo swing (**{last_eq:.4f}**)
+- Il prezzo attuale di **{product_id}** è **{last_close:.4f} USD**
+- Timeframe: **{tf_label}**
 - Il trend di fondo è: **{trend}**
-- La maggior parte degli indicatori principali (MACD, Momentum, RSI, PSAR, ADX, MFI, Fisher) sono orientati a {'rialzo' if sum(bull_conds) >= 4 else 'ribasso' if sum(bear_conds) >= 4 else 'equilibrio'}, 
-- Volumi: {vol_sell:.0f}% sell, {vol_buy:.0f}% buy (stime indicative, CoinGecko non fornisce breakdown reale)
+- La maggior parte degli indicatori principali (MACD, Momentum, RSI, PSAR, ADX, MFI) sono orientati a {'rialzo' if sum(bull_conds) >= 4 else 'ribasso' if sum(bear_conds) >= 4 else 'equilibrio'}.
 - Attuale segnale operativo: {signal}
 
 📈 **Livelli critici osservati:**
@@ -145,13 +143,12 @@ if st.button("Analizza ora"):
         report += f"""
 ---
 **Indicatori chiave:**
-- RSI: {last_rsi:.2f}
-- Momentum: {last_momentum:.2f}
-- PSAR: {last_psar:.4f}
-- ADX: {last_adx:.2f}
-- MFI: {last_mfi:.2f}
-- MACD: {last_macd:.4f} / {last_macd_signal:.4f}
-- Fisher: {last_fisher:.4f}
+- RSI: {last['RSI']:.2f}
+- Momentum: {last['Momentum']:.2f}
+- PSAR: {last['PSAR']:.4f}
+- ADX: {last['ADX']:.2f}
+- MFI: {last['MFI']:.2f}
+- MACD: {last['MACD']:.4f} / {last['MACD_signal']:.4f}
 """
         st.info(report)
 
@@ -173,7 +170,9 @@ if st.button("Analizza ora"):
         st.subheader("📈 Ultimi dati & indicatori")
         st.dataframe(df.tail(20))
 
+    else:
+        st.warning("Dati insufficienti o errore nel download.")
 else:
-    st.info("Seleziona una crypto e premi Analizza ora.")
+    st.info("Seleziona crypto, timeframe e premi Scarica e analizza.")
 
-st.caption("⚠️ Questo report è generato automaticamente dall’AI e NON è un consiglio finanziario. Verifica sempre i dati e la strategia.")
+st.caption("⚠️ Questo report è generato automaticamente dall’AI e NON è un consiglio finanziario. Verifica sempre dati e strategia.")
