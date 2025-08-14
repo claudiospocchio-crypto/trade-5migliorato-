@@ -20,7 +20,18 @@ interval = st.selectbox("Timeframe", ["hourly", "daily"], index=0)
 df = None
 if st.button("Analizza ora"):
     with st.spinner("Scarico dati da CoinGecko..."):
-        data = cg.get_coin_market_chart_by_id(id=crypto_id, vs_currency='usd', days=n_days, interval=interval)
+        # Fix CoinGecko API: interval must be "daily" if n_days > 90, else "hourly" or "daily"
+        if n_days > 90:
+            interval = "daily"
+        elif n_days <= 90 and interval not in ["hourly", "daily"]:
+            interval = "hourly"
+        try:
+            data = cg.get_coin_market_chart_by_id(id=crypto_id, vs_currency='usd', days=n_days, interval=interval)
+        except Exception as e:
+            st.error(f"Errore CoinGecko: {e}\nProva a cambiare il timeframe o riduci i giorni di storico.")
+            df = None
+
+    if df is None and 'data' in locals():
         prices = pd.DataFrame(data['prices'], columns=['timestamp', 'price'])
         prices['Date'] = pd.to_datetime(prices['timestamp'], unit='ms')
         prices.set_index('Date', inplace=True)
@@ -42,7 +53,8 @@ if st.button("Analizza ora"):
         df["-DI"] = ta.trend.adx_neg(df["High"], df["Low"], df["Close"], window=14)
         df["PSAR"] = ta.trend.psar(df["High"], df["Low"], df["Close"])
         df["Momentum"] = ta.momentum.roc(df["Close"], window=10)
-        df["Fisher"] = ta.momentum.kama(df["Close"], window=10)  # Sostituto rapido
+        # Fisher: uso KAMA per simulazione, non c'è Fisher nativo in ta
+        df["Fisher"] = ta.momentum.kama(df["Close"], window=10)
         macd = ta.trend.macd(df["Close"])
         macd_signal = ta.trend.macd_signal(df["Close"])
         df["MACD"] = macd
@@ -101,7 +113,7 @@ if st.button("Analizza ora"):
             take_profit = np.nan
             stop_loss = np.nan
 
-        # Volumi
+        # Volumi (simulati, CoinGecko non fornisce breakdown buy/sell)
         vol_sell = np.random.uniform(60, 99) if sum(bear_conds) >= 4 else np.random.uniform(10, 50)
         vol_buy = 100 - vol_sell
 
