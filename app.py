@@ -28,16 +28,16 @@ if not filtered_pairs:
     st.warning("Nessuna crypto trovata per la ricerca inserita.")
 product_id = st.selectbox("Scegli coppia Coinbase", filtered_pairs, index=0 if filtered_pairs else None)
 
+# SOLO granularità supportate da Coinbase
 _tf_map = {
+    "1 minuto": 60,
+    "5 minuti": 300,
     "15 minuti": 900,
     "1 ora": 3600,
     "6 ore": 21600,
-    "12 ore": 43200,
-    "1 giorno": 86400,
-    "3 giorni": 259200,
-    "1 settimana": 604800
+    "1 giorno": 86400
 }
-tf_label = st.selectbox("Timeframe", list(_tf_map.keys()), index=0)
+tf_label = st.selectbox("Timeframe", list(_tf_map.keys()), index=2)
 granularity = _tf_map[tf_label]
 
 n_candles = st.slider("Quante candele di storico?", min_value=30, max_value=300, value=120)
