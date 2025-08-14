@@ -13,11 +13,8 @@ from helpers import (
     add_trading_signals
 )
 
-st.set_page_config("Trade5 Migliorato", layout="wide")
-st.title("📈 Trade5 Migliorato con CoinGecko")
-st.markdown("""
-Scegli una crypto e scarica prezzi reali da CoinGecko per segnali automatici!
-""")
+st.set_page_config("Trade5 Migliorato CoinGecko", layout="wide")
+st.title("📈 Trade5 Migliorato - CoinGecko Live Crypto Signals")
 
 cg = CoinGeckoAPI()
 crypto_list = cg.get_coins_list()
@@ -27,6 +24,7 @@ crypto_id = st.selectbox("Scegli criptovaluta (CoinGecko)", options=list(crypto_
 n_days = st.slider("Quanti giorni di storico?", min_value=1, max_value=90, value=30)
 interval = st.selectbox("Timeframe", ["hourly", "daily"], index=1)
 
+df = None
 if st.button("Scarica dati CoinGecko"):
     with st.spinner("Scarico dati..."):
         data = cg.get_coin_market_chart_by_id(id=crypto_id, vs_currency='usd', days=n_days, interval=interval)
@@ -46,11 +44,9 @@ if st.button("Scarica dati CoinGecko"):
         for fun in [add_fibonacci_levels, add_momentum_indicators, add_psar, add_dmi_adx, add_mfi, add_fisher, add_trading_signals]:
             df = fun(df)
         st.success(f"Dati scaricati per {crypto_names[crypto_id]} ({len(df)} barre).")
-else:
-    df = None
 
 if df is not None and not df.empty:
-    st.subheader("Grafico prezzi, Fibonacci, PSAR e segnali")
+    st.subheader("Grafico prezzi, Fibonacci, segnali e livelli TP/SL")
     import plotly.graph_objs as go
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
@@ -63,10 +59,15 @@ if df is not None and not df.empty:
     sell_signals = df[df["Signal"]=="SELL"]
     fig.add_trace(go.Scatter(x=buy_signals.index, y=buy_signals["Close"], mode="markers", marker=dict(size=8, color="green", symbol="triangle-up"), name="BUY"))
     fig.add_trace(go.Scatter(x=sell_signals.index, y=sell_signals["Close"], mode="markers", marker=dict(size=8, color="red", symbol="triangle-down"), name="SELL"))
+    # TP/SL livelli
+    fig.add_trace(go.Scatter(x=buy_signals.index, y=buy_signals["TakeProfit"], mode="markers", marker=dict(size=7, color="orange"), name="TP BUY"))
+    fig.add_trace(go.Scatter(x=buy_signals.index, y=buy_signals["StopLoss"], mode="markers", marker=dict(size=7, color="black"), name="SL BUY"))
+    fig.add_trace(go.Scatter(x=sell_signals.index, y=sell_signals["TakeProfit"], mode="markers", marker=dict(size=7, color="orange"), name="TP SELL"))
+    fig.add_trace(go.Scatter(x=sell_signals.index, y=sell_signals["StopLoss"], mode="markers", marker=dict(size=7, color="black"), name="SL SELL"))
     st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Ultimi segnali di trading")
-    st.dataframe(df[["Open","High","Low","Close","RSI","PSAR","Signal"]].tail(20), use_container_width=True)
+    st.subheader("Ultimi segnali, TP e SL")
+    st.dataframe(df[["Open","High","Low","Close","RSI","PSAR","ADX","MFI","Fisher","Signal","TakeProfit","StopLoss"]].tail(20), use_container_width=True)
 
     st.subheader("Indicatori Tecnici")
     tabs = st.tabs(["Momentum", "DMI/ADX", "MFI", "Fisher"])
