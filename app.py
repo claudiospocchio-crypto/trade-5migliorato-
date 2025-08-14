@@ -84,6 +84,37 @@ if st.button("Scarica e analizza"):
         df["MACD_signal"] = ta.trend.macd_signal(df["Close"])
         df = df.dropna()
 
+        # Individua swing high/low e zone di inversione
+        lookback = 30
+        swing_high = df["High"][-lookback:].max()
+        swing_low = df["Low"][-lookback:].min()
+        equilibrio = (swing_high + swing_low) / 2
+
+        # Individua prese di liquidità/manipolazione
+        liquidity_grab_up = (
+            (df["High"].iloc[-1] > swing_high) and
+            (df["Close"].iloc[-1] < swing_high)
+        )
+        liquidity_grab_down = (
+            (df["Low"].iloc[-1] < swing_low) and
+            (df["Close"].iloc[-1] > swing_low)
+        )
+
+        # Spike di volume
+        vol_media = df["Volume"][-lookback:].mean()
+        spike = df["Volume"].iloc[-1] > 2 * vol_media
+
+        # Testi zone manipolazione/inversione
+        liquidity_text = ""
+        if liquidity_grab_up:
+            liquidity_text += "- **Presa di liquidità sopra il massimo recente** (possibile manipolazione rialzista)\n"
+        if liquidity_grab_down:
+            liquidity_text += "- **Presa di liquidità sotto il minimo recente** (possibile manipolazione ribassista)\n"
+        if spike:
+            liquidity_text += "- **Volume anomalo rilevato nell’ultima candela**\n"
+        if not liquidity_text:
+            liquidity_text = "- Nessuna manipolazione/volume anomalo rilevato."
+
         # Trend e segnali
         last = df.iloc[-1]
         last_prev = df.iloc[-2]
@@ -125,10 +156,10 @@ if st.button("Scarica e analizza"):
             take_profit = np.nan
             stop_loss = np.nan
 
-        # Livelli swing
-        last_high = df["High"][-30:].max()
-        last_low = df["Low"][-30:].min()
-        last_eq = (last_high + last_low) / 2
+        # Livelli swing per il report
+        last_high = swing_high
+        last_low = swing_low
+        last_eq = equilibrio
 
         # Report
         report = f"""
@@ -165,21 +196,45 @@ if st.button("Scarica e analizza"):
 - MFI: {last['MFI']:.2f}
 - MACD: {last['MACD']:.4f} / {last['MACD_signal']:.4f}
 """
+
+        # Zone inversione/manipolazione/volumi
+        report += f"""\n
+🔍 **Zone di inversione & manipolazione:**
+{liquidity_text}
+"""
+
         st.info(report)
 
-        st.subheader("📊 Grafico prezzi e segnali")
+        st.subheader("📊 Grafico prezzi, swing, inversioni e volumi anomali")
         import plotly.graph_objs as go
         fig = go.Figure()
         fig.add_trace(go.Candlestick(
             x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name="Candles"
         ))
-        fig.add_hline(y=last_high, line_dash="dot", annotation_text="Swing High", opacity=0.5)
-        fig.add_hline(y=last_low, line_dash="dot", annotation_text="Swing Low", opacity=0.5)
+        # Swing levels
+        fig.add_hline(y=last_high, line_dash="dot", annotation_text="Swing High", opacity=0.6)
+        fig.add_hline(y=last_low, line_dash="dot", annotation_text="Swing Low", opacity=0.6)
         fig.add_hline(y=last_eq, line_dash="dot", annotation_text="Equilibrio", opacity=0.5)
+        # TP/SL
         if not np.isnan(take_profit):
             fig.add_hline(y=take_profit, line=dict(color="green", dash="dash"), annotation_text="Take Profit")
         if not np.isnan(stop_loss):
             fig.add_hline(y=stop_loss, line=dict(color="red", dash="dash"), annotation_text="Stop Loss")
+        # Marker per manipolazione/volume spike
+        shapes = []
+        if liquidity_grab_up:
+            shapes.append(dict(type="circle", xref="x", yref="y",
+                              x0=df.index[-1], x1=df.index[-1], y0=df["High"].iloc[-1], y1=df["High"].iloc[-1]+(last_high*0.01),
+                              line_color="blue", fillcolor="blue"))
+        if liquidity_grab_down:
+            shapes.append(dict(type="circle", xref="x", yref="y",
+                              x0=df.index[-1], x1=df.index[-1], y0=df["Low"].iloc[-1]-last_low*0.01, y1=df["Low"].iloc[-1],
+                              line_color="orange", fillcolor="orange"))
+        if spike:
+            shapes.append(dict(type="circle", xref="x", yref="y",
+                              x0=df.index[-1], x1=df.index[-1], y0=last_close, y1=last_close + last_close*0.01,
+                              line_color="red", fillcolor="red"))
+        fig.update_layout(shapes=shapes)
         st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("📈 Ultimi dati & indicatori")
