@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import requests
 import ta
+from ta.trend import PSARIndicator
 from datetime import datetime, timedelta
 
 st.set_page_config("Coinbase Crypto Analysis", layout="wide")
@@ -46,6 +47,7 @@ def get_coinbase_ohlc(product_id, granularity, n_candles):
     df.set_index("Date", inplace=True)
     df = df[["open", "high", "low", "close", "volume"]]
     df.columns = ["Open", "High", "Low", "Close", "Volume"]
+    df = df.astype(float)
     return df
 
 if st.button("Scarica e analizza"):
@@ -63,7 +65,9 @@ if st.button("Scarica e analizza"):
         df["ADX"] = ta.trend.adx(df["High"], df["Low"], df["Close"], window=14)
         df["+DI"] = ta.trend.adx_pos(df["High"], df["Low"], df["Close"], window=14)
         df["-DI"] = ta.trend.adx_neg(df["High"], df["Low"], df["Close"], window=14)
-        df["PSAR"] = ta.trend.psar(df["High"], df["Low"], df["Close"])
+        # PSAR con metodo corretto
+        psar = PSARIndicator(high=df["High"], low=df["Low"], close=df["Close"])
+        df["PSAR"] = psar.psar()
         df["Momentum"] = ta.momentum.roc(df["Close"], window=10)
         df["MACD"] = ta.trend.macd(df["Close"])
         df["MACD_signal"] = ta.trend.macd_signal(df["Close"])
