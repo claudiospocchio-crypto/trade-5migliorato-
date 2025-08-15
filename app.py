@@ -101,13 +101,15 @@ def suggest_entry_tp_sl(df, fvg_zones):
             entry = min(zona["y0"], zona["y1"])
             sl = entry - abs(zona["y1"]-zona["y0"])
             tp = entry + 2 * abs(zona["y1"]-zona["y0"])
-            candidates.append({"zona": zona, "direction": direction, "entry": entry, "tp": tp, "sl": sl})
+            rr = (tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else np.nan
+            candidates.append({"zona": zona, "direction": direction, "entry": entry, "tp": tp, "sl": sl, "rr": rr})
         elif zona["type"] == "SUPPLY" and (zona["y0"] >= last_close >= zona["y1"] or zona["y1"] >= last_close >= zona["y0"]):
             direction = "SHORT"
             entry = max(zona["y0"], zona["y1"])
             sl = entry + abs(zona["y1"]-zona["y0"])
             tp = entry - 2 * abs(zona["y1"]-zona["y0"])
-            candidates.append({"zona": zona, "direction": direction, "entry": entry, "tp": tp, "sl": sl})
+            rr = (entry - tp) / abs(sl - entry) if abs(sl - entry) > 0 else np.nan
+            candidates.append({"zona": zona, "direction": direction, "entry": entry, "tp": tp, "sl": sl, "rr": rr})
     if not candidates and fvg_zones:
         fvg = min(fvg_zones, key=lambda z: min(abs(df["Close"].iloc[-1] - z["y0"]), abs(df["Close"].iloc[-1] - z["y1"])))
         if fvg["type"] == "DEMAND":
@@ -115,13 +117,46 @@ def suggest_entry_tp_sl(df, fvg_zones):
             entry = min(fvg["y0"], fvg["y1"])
             sl = entry - abs(fvg["y1"]-fvg["y0"])
             tp = entry + 2 * abs(fvg["y1"]-fvg["y0"])
+            rr = (tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else np.nan
         else:
             direction = "SHORT"
             entry = max(fvg["y0"], fvg["y1"])
             sl = entry + abs(fvg["y1"]-fvg["y0"])
             tp = entry - 2 * abs(fvg["y1"]-fvg["y0"])
-        return {"zona": fvg, "direction": direction, "entry": entry, "tp": tp, "sl": sl}
+            rr = (entry - tp) / abs(sl - entry) if abs(sl - entry) > 0 else np.nan
+        return {"zona": fvg, "direction": direction, "entry": entry, "tp": tp, "sl": sl, "rr": rr}
     return candidates[0] if candidates else None
+
+def trade_commentary(entry_plan, last_close):
+    if not entry_plan:
+        return "⏳ Nessun ingresso operativo consigliato sulle zone FVG. Attendere che il prezzo si avvicini a una zona chiave."
+    entry = entry_plan["entry"]
+    tp = entry_plan["tp"]
+    sl = entry_plan["sl"]
+    rr = entry_plan["rr"]
+    direction = entry_plan["direction"]
+    if direction == "LONG":
+        txt = f"🟢 **SETUP LONG in zona FVG Demand**\n"
+        txt += f"• Entry: {entry:.4f} | TP: {tp:.4f} | SL: {sl:.4f}\n"
+        txt += f"• Rischio/Rendimento: {rr:.2f}\n"
+        if last_close < entry * 0.995: # prezzo lontano
+            txt += "🔸 Il prezzo è sotto la zona FVG: attendere un ritorno in area Demand per valutare un ingresso LONG.\n"
+        elif last_close > entry * 1.01:
+            txt += "🔸 Il prezzo è sopra la zona FVG: meglio attendere nuovi setup.\n"
+        else:
+            txt += "✅ Il prezzo è in zona FVG Demand: valuta ingresso LONG, attendi conferma price action.\n"
+    else:
+        txt = f"🔴 **SETUP SHORT in zona FVG Supply**\n"
+        txt += f"• Entry: {entry:.4f} | TP: {tp:.4f} | SL: {sl:.4f}\n"
+        txt += f"• Rischio/Rendimento: {rr:.2f}\n"
+        if last_close > entry * 1.005: # prezzo lontano
+            txt += "🔸 Il prezzo è sopra la zona FVG: attendere un ritorno in area Supply per valutare uno SHORT.\n"
+        elif last_close < entry * 0.99:
+            txt += "🔸 Il prezzo è sotto la zona FVG: meglio attendere nuovi setup.\n"
+        else:
+            txt += "✅ Il prezzo è in zona FVG Supply: valuta ingresso SHORT, attendi conferma price action.\n"
+    txt += "\n⚠️ Ricorda: i segnali FVG sono più forti se confermati da volumi, oscillatori e price action."
+    return txt
 
 if st.button("Scarica e analizza"):
     with st.spinner("Scarico dati da Coinbase..."):
@@ -152,6 +187,8 @@ if st.button("Scarica e analizza"):
         fib_levels = get_fibonacci_levels(df, lookback=lookback)
         fvg_zones = find_fvg(df[-lookback:])
         entry_plan = suggest_entry_tp_sl(df, fvg_zones)
+        last_close = df["Close"].iloc[-1]
+        commentary = trade_commentary(entry_plan, last_close)
 
         vol_media = df["Volume"][-lookback:].mean()
         spike = df["Volume"].iloc[-1] > 2 * vol_media
@@ -190,12 +227,15 @@ if st.button("Scarica e analizza"):
         if sum(bull_conds) >= 4:
             trend = "📈 Rialzista"
             signal = "🟢 **Acquisto** (BUY)"
+            signal_color = "#d3f9d8"
         elif sum(bear_conds) >= 4:
             trend = "📉 Ribassista"
             signal = "🔴 **Vendita** (SELL)"
+            signal_color = "#ffd6d6"
         else:
             trend = "🔄 Laterale/Equilibrio"
             signal = "🟡 **Attendere** (wait)"
+            signal_color = "#fffbc1"
 
         last_close = last["Close"]
         if "BUY" in signal:
@@ -208,51 +248,68 @@ if st.button("Scarica e analizza"):
             take_profit = np.nan
             stop_loss = np.nan
 
-        if entry_plan:
-            fvg_descr = f"Zona FVG {'DEMAND' if entry_plan['direction']=='LONG' else 'SUPPLY'}"
-            fvg_descr += f" ({entry_plan['zona']['start'].strftime('%Y-%m-%d %H:%M')} → {entry_plan['zona']['end'].strftime('%Y-%m-%d %H:%M')})"
-            fvg_descr += f"\n- **{entry_plan['direction']} ENTRY**: {entry_plan['entry']:.2f}\n- **Take Profit**: {entry_plan['tp']:.2f}\n- **Stop Loss**: {entry_plan['sl']:.2f}"
-        else:
-            fvg_descr = "Nessuna zona FVG vicina/attiva per un ingresso immediato."
+        # --- REPORT MIGLIORATO ---
+        st.markdown(f"""
+<style>
+.bluebox {{
+    background-color:#eaf4fb;
+    border-radius:8px;
+    padding: 24px 22px;
+    margin-bottom:16px;
+    font-size:18px;
+    color:#08345c;
+    border: 1.5px solid #b6d6f7;
+}}
+.critico {{
+    font-weight:bold;
+    color:#ef233c;
+}}
+.critico-swing {{
+    color:#08415c;
+}}
+</style>
+""", unsafe_allow_html=True)
 
-        report = f"""
-🔍 **Valutazione Generale:**
+        st.markdown(f"""
+<div class="bluebox">
+<h4>🔍 Valutazione Generale:</h4>
+<ul>
+<li>Il prezzo attuale di <b>{product_id}</b> è <b>{last_close:.4f} USD</b></li>
+<li>Timeframe: <b>{tf_label}</b></li>
+<li>Trend di fondo: <b>{trend}</b></li>
+<li>Segnale operativo: <b>{signal}</b></li>
+</ul>
 
-- Il prezzo attuale di **{product_id}** è **{last_close:.4f} USD**
-- Timeframe: **{tf_label}**
-- Trend di fondo: **{trend}**
-- Segnale operativo: {signal}
+<h4>📈 Livelli critici osservati:</h4>
+<ul>
+<li>Swing High: <span class="critico-swing">{swing_high:.4f}</span></li>
+<li>Swing Low: <span class="critico-swing">{swing_low:.4f}</span></li>
+<li>Equilibrio: <span class="critico-swing">{equilibrio:.4f}</span></li>
+<li>Fibonacci: {" | ".join([f"{k}: {v:.2f}" for k, v in fib_levels.items()])}</li>
+</ul>
+<hr style="margin:14px 0;">
+<b>Zone di inversione & manipolazione:</b>
+<ul>
+<li>{liquidity_text.strip()}</li>
+</ul>
+<hr style="margin:14px 0;">
+<b>Operatività FVG supply/demand:</b>
+<br>
+<pre style="background:#fff;padding:12px;border-radius:8px;font-size:15px">{commentary}</pre>
+<hr style="margin:14px 0;">
+<b>Indicatori chiave:</b>
+<ul>
+<li>RSI: {last['RSI']:.2f}</li>
+<li>Momentum: {last['Momentum']:.2f}</li>
+<li>PSAR: {last['PSAR']:.4f}</li>
+<li>ADX: {last['ADX']:.2f}</li>
+<li>MFI: {last['MFI']:.2f}</li>
+<li>MACD: {last['MACD']:.4f} / {last['MACD_signal']:.4f}</li>
+</ul>
+</div>
+""", unsafe_allow_html=True)
 
-📈 **Livelli critici osservati:**
-- Swing High: {swing_high:.4f}
-- Swing Low: {swing_low:.4f}
-- Equilibrio: {equilibrio:.4f}
-- Fibonacci: """ + " | ".join([f"{k}: {v:.2f}" for k, v in fib_levels.items()]) + """
-
----
-**Zone di inversione & manipolazione:**
-""" + liquidity_text + """
-
----
-**Operatività FVG supply/demand:**
-
-""" + fvg_descr + """
-
----
-**Indicatori chiave:**
-- RSI: {rsi:.2f}
-- Momentum: {mom:.2f}
-- PSAR: {psar:.4f}
-- ADX: {adx:.2f}
-- MFI: {mfi:.2f}
-- MACD: {macd:.4f} / {macdsig:.4f}
-""".format(
-    rsi=last["RSI"], mom=last["Momentum"], psar=last["PSAR"], adx=last["ADX"],
-    mfi=last["MFI"], macd=last["MACD"], macdsig=last["MACD_signal"]
-)
-        st.info(report)
-
-        st.subheader("📊 Grafico prezzi, Fibonacci, FVG e volumi")
+        st.markdown("<h4>📊 Grafico prezzi, Fibonacci, FVG e volumi</h4>", unsafe_allow_html=True)
         fig = go.Figure()
         fig.add_trace(go.Candlestick(
             x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name="Candles"
@@ -265,7 +322,7 @@ if st.button("Scarica e analizza"):
             fig.add_hline(y=v, line_dash="dot", line_color=color_map.get(k, "gray"), annotation_text=f"Fib {k}")
 
         for zona in fvg_zones:
-            color = "rgba(50,200,100,0.2)" if zona["type"] == "DEMAND" else "rgba(255,80,80,0.2)"
+            color = "rgba(50,200,100,0.20)" if zona["type"] == "DEMAND" else "rgba(255,80,80,0.20)"
             fig.add_vrect(x0=zona["start"], x1=zona["end"], y0=zona["y0"], y1=zona["y1"], fillcolor=color, line_width=0, annotation_text=zona["type"])
 
         if entry_plan:
@@ -280,7 +337,7 @@ if st.button("Scarica e analizza"):
 
         st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader("📈 Volumi e ultimi dati")
+        st.markdown("<h4>📈 Volumi e ultimi dati</h4>", unsafe_allow_html=True)
         st.line_chart(df["Volume"])
         st.dataframe(df.tail(20))
 
