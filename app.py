@@ -28,7 +28,10 @@ _tf_map = {
     "1 minuto": 60,
     "5 minuti": 300,
     "15 minuti": 900,
+    "30 minuti": 1800,
     "1 ora": 3600,
+    "2 ore": 7200,
+    "4 ore": 14400,
     "6 ore": 21600,
     "1 giorno": 86400
 }
@@ -69,7 +72,6 @@ def get_fibonacci_levels(df, lookback=30):
     return levels
 
 def find_fvg(df):
-    # Lista di dict con info zona
     fvg_zones = []
     for i in range(2, len(df)):
         # FVG Bullish (DEMAND): min corrente > max due barre fa
@@ -93,7 +95,6 @@ def find_fvg(df):
     return fvg_zones
 
 def suggest_entry_tp_sl(df, fvg_zones):
-    # Cerca la FVG più vicina al close attuale (tra le ultime 10)
     last_close = df["Close"].iloc[-1]
     candidates = []
     for zona in fvg_zones[-10:]:
@@ -109,7 +110,6 @@ def suggest_entry_tp_sl(df, fvg_zones):
             sl = entry + abs(zona["y1"]-zona["y0"])
             tp = entry - 2 * abs(zona["y1"]-zona["y0"])
             candidates.append({"zona": zona, "direction": direction, "entry": entry, "tp": tp, "sl": sl})
-    # Se non c'è match, prendi la FVG più vicina in assoluto
     if not candidates and fvg_zones:
         fvg = min(fvg_zones, key=lambda z: min(abs(df["Close"].iloc[-1] - z["y0"]), abs(df["Close"].iloc[-1] - z["y1"])))
         if fvg["type"] == "DEMAND":
@@ -210,10 +210,9 @@ if st.button("Scarica e analizza"):
             take_profit = np.nan
             stop_loss = np.nan
 
-        # Report su FVG entry plan
         if entry_plan:
             fvg_descr = f"Zona FVG {'DEMAND' if entry_plan['direction']=='LONG' else 'SUPPLY'}"
-            fvg_descr += f" ({entry_plan['zona']['start'].strftime('%Y-%m-%d %H:%M')} &rarr; {entry_plan['zona']['end'].strftime('%Y-%m-%d %H:%M')})"
+            fvg_descr += f" ({entry_plan['zona']['start'].strftime('%Y-%m-%d %H:%M')} → {entry_plan['zona']['end'].strftime('%Y-%m-%d %H:%M')})"
             fvg_descr += f"\n- **{entry_plan['direction']} ENTRY**: {entry_plan['entry']:.2f}\n- **Take Profit**: {entry_plan['tp']:.2f}\n- **Stop Loss**: {entry_plan['sl']:.2f}"
         else:
             fvg_descr = "Nessuna zona FVG vicina/attiva per un ingresso immediato."
@@ -267,18 +266,15 @@ if st.button("Scarica e analizza"):
         for k, v in fib_levels.items():
             fig.add_hline(y=v, line_dash="dot", line_color=color_map.get(k, "gray"), annotation_text=f"Fib {k}")
 
-        # FVG supply/demand (con label)
         for zona in fvg_zones:
             color = "rgba(50,200,100,0.2)" if zona["type"] == "DEMAND" else "rgba(255,80,80,0.2)"
             fig.add_vrect(x0=zona["start"], x1=zona["end"], y0=zona["y0"], y1=zona["y1"], fillcolor=color, line_width=0, annotation_text=zona["type"])
 
-        # Mostra TP/SL/ENTRY della FVG attiva
         if entry_plan:
             fig.add_hline(y=entry_plan["entry"], line=dict(color="blue", width=2), annotation_text="Entry FVG")
             fig.add_hline(y=entry_plan["tp"], line=dict(color="green", dash="dash"), annotation_text="TP FVG")
             fig.add_hline(y=entry_plan["sl"], line=dict(color="red", dash="dash"), annotation_text="SL FVG")
 
-        # TP/SL generici
         if not np.isnan(take_profit):
             fig.add_hline(y=take_profit, line=dict(color="green", dash="dot"), annotation_text="Take Profit")
         if not np.isnan(stop_loss):
