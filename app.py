@@ -354,4 +354,4 @@ if st.button("Scarica e analizza"):
 else:
     st.info("Cerca la crypto, seleziona timeframe e premi Scarica e analizza.")
 
-st.caption("⚠️ Questo report è generato automaticamente dall’AI e NON è un consiglio finanziario. Verifica sempre dati e strategia.") 
+st.caption("⚠️ Questo report è generato automaticamente dall’AI e NON è un consiglio finanziario. Verifica sempre dati e strategia.")
