@@ -6,8 +6,8 @@ import ta
 from ta.trend import PSARIndicator
 import plotly.graph_objs as go
 
-st.set_page_config("Coinbase Crypto Advanced Report", layout="wide")
-st.title("🤖 Coinbase Crypto Advanced Report")
+st.set_page_config("Coinbase Advanced Trader Report", layout="wide")
+st.title("📊 Coinbase Crypto Advanced Trader Report")
 
 @st.cache_data(ttl=3600)
 def get_coinbase_products():
@@ -24,7 +24,6 @@ if not filtered_pairs:
     st.warning("Nessuna crypto trovata per la ricerca inserita.")
 product_id = st.selectbox("Scegli coppia Coinbase", filtered_pairs, index=0 if filtered_pairs else None)
 
-# SOLO granularità realmente supportate da Coinbase!
 _tf_map = {
     "1 minuto": 60,
     "5 minuti": 300,
@@ -35,7 +34,6 @@ _tf_map = {
 }
 tf_label = st.selectbox("Timeframe", list(_tf_map.keys()), index=2)
 granularity = _tf_map[tf_label]
-
 n_candles = st.slider("Quante candele di storico?", min_value=30, max_value=300, value=120)
 
 def get_coinbase_ohlc(product_id, granularity, n_candles):
@@ -69,10 +67,15 @@ def get_fibonacci_levels(df, lookback=30):
     }
     return levels
 
+def find_swing_high_low(df, lookback=30):
+    sh = df["High"][-lookback:].max()
+    sl = df["Low"][-lookback:].min()
+    eq = (sh + sl) / 2
+    return sh, sl, eq
+
 def find_fvg(df):
     fvg_zones = []
     for i in range(2, len(df)):
-        # FVG Bullish (DEMAND): min corrente > max due barre fa
         if df["Low"].iloc[i] > df["High"].iloc[i - 2]:
             fvg_zones.append({
                 "start": df.index[i-2],
@@ -81,7 +84,6 @@ def find_fvg(df):
                 "y0": df["High"].iloc[i-2],
                 "y1": df["Low"].iloc[i]
             })
-        # FVG Bearish (SUPPLY): max corrente < min due barre fa
         if df["High"].iloc[i] < df["Low"].iloc[i - 2]:
             fvg_zones.append({
                 "start": df.index[i-2],
@@ -92,70 +94,103 @@ def find_fvg(df):
             })
     return fvg_zones
 
-def suggest_entry_tp_sl(df, fvg_zones):
-    last_close = df["Close"].iloc[-1]
-    candidates = []
-    for zona in fvg_zones[-10:]:
-        if zona["type"] == "DEMAND" and (zona["y0"] <= last_close <= zona["y1"] or zona["y1"] <= last_close <= zona["y0"]):
-            direction = "LONG"
-            entry = min(zona["y0"], zona["y1"])
-            sl = entry - abs(zona["y1"]-zona["y0"])
-            tp = entry + 2 * abs(zona["y1"]-zona["y0"])
-            rr = (tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else np.nan
-            candidates.append({"zona": zona, "direction": direction, "entry": entry, "tp": tp, "sl": sl, "rr": rr})
-        elif zona["type"] == "SUPPLY" and (zona["y0"] >= last_close >= zona["y1"] or zona["y1"] >= last_close >= zona["y0"]):
-            direction = "SHORT"
-            entry = max(zona["y0"], zona["y1"])
-            sl = entry + abs(zona["y1"]-zona["y0"])
-            tp = entry - 2 * abs(zona["y1"]-zona["y0"])
-            rr = (entry - tp) / abs(sl - entry) if abs(sl - entry) > 0 else np.nan
-            candidates.append({"zona": zona, "direction": direction, "entry": entry, "tp": tp, "sl": sl, "rr": rr})
-    if not candidates and fvg_zones:
-        fvg = min(fvg_zones, key=lambda z: min(abs(df["Close"].iloc[-1] - z["y0"]), abs(df["Close"].iloc[-1] - z["y1"])))
-        if fvg["type"] == "DEMAND":
-            direction = "LONG"
-            entry = min(fvg["y0"], fvg["y1"])
-            sl = entry - abs(fvg["y1"]-fvg["y0"])
-            tp = entry + 2 * abs(fvg["y1"]-fvg["y0"])
-            rr = (tp - entry) / abs(entry - sl) if abs(entry - sl) > 0 else np.nan
-        else:
-            direction = "SHORT"
-            entry = max(fvg["y0"], fvg["y1"])
-            sl = entry + abs(fvg["y1"]-fvg["y0"])
-            tp = entry - 2 * abs(fvg["y1"]-fvg["y0"])
-            rr = (entry - tp) / abs(sl - entry) if abs(sl - entry) > 0 else np.nan
-        return {"zona": fvg, "direction": direction, "entry": entry, "tp": tp, "sl": sl, "rr": rr}
-    return candidates[0] if candidates else None
+def detect_demand_supply_zones(df, lookback=30):
+    # Area di domanda = minimi chiave, area di offerta = massimi chiave
+    demand = []
+    supply = []
+    lows = df["Low"][-lookback:]
+    highs = df["High"][-lookback:]
+    # Domanda: Minimi importanti (supporti)
+    area_demand = lows[lows <= lows.quantile(0.15)].unique()
+    # Offerta: Massimi importanti (resistenze)
+    area_supply = highs[highs >= highs.quantile(0.85)].unique()
+    # Prendi solo pochi livelli per chiarezza
+    return sorted(area_demand)[:3], sorted(area_supply)[-3:]
 
-def trade_commentary(entry_plan, last_close):
-    if not entry_plan:
-        return "⏳ Nessun ingresso operativo consigliato sulle zone FVG. Attendere che il prezzo si avvicini a una zona chiave."
-    entry = entry_plan["entry"]
-    tp = entry_plan["tp"]
-    sl = entry_plan["sl"]
-    rr = entry_plan["rr"]
-    direction = entry_plan["direction"]
-    if direction == "LONG":
-        txt = f"🟢 **SETUP LONG in zona FVG Demand**\n"
-        txt += f"• Entry: {entry:.4f} | TP: {tp:.4f} | SL: {sl:.4f}\n"
-        txt += f"• Rischio/Rendimento: {rr:.2f}\n"
-        if last_close < entry * 0.995: # prezzo lontano
-            txt += "🔸 Il prezzo è sotto la zona FVG: attendere un ritorno in area Demand per valutare un ingresso LONG.\n"
-        elif last_close > entry * 1.01:
-            txt += "🔸 Il prezzo è sopra la zona FVG: meglio attendere nuovi setup.\n"
-        else:
-            txt += "✅ Il prezzo è in zona FVG Demand: valuta ingresso LONG, attendi conferma price action.\n"
+def detect_resistances_supports(df, lookback=30):
+    # Cerca livelli dove il prezzo rimbalza più volte
+    prices = df["Close"][-lookback:]
+    levels = []
+    for p in np.linspace(prices.min(), prices.max(), num=10):
+        count = np.sum(np.abs(prices - p) < (prices.max()-prices.min())*0.015)
+        if count >= 2:
+            levels.append(round(p, 4))
+    return sorted(set(levels))
+
+def detect_quasimodo(df, lookback=20):
+    # Pattern double top/double bottom (semplificato)
+    closes = df["Close"][-lookback:]
+    # Double bottom
+    if closes.iloc[-1] > closes.min() and (closes == closes.min()).sum() >= 2:
+        return "double bottom"
+    # Double top
+    if closes.iloc[-1] < closes.max() and (closes == closes.max()).sum() >= 2:
+        return "double top"
+    return None
+
+def pattern_bullish_engulfing(df):
+    # Semplice pattern: candle verde che ingloba la rossa precedente
+    if len(df) < 2: return False
+    prev = df.iloc[-2]
+    last = df.iloc[-1]
+    return prev["Close"] < prev["Open"] and last["Close"] > last["Open"] and last["Close"] > prev["Open"] and last["Open"] < prev["Close"]
+
+def pattern_bearish_engulfing(df):
+    if len(df) < 2: return False
+    prev = df.iloc[-2]
+    last = df.iloc[-1]
+    return prev["Close"] > prev["Open"] and last["Close"] < last["Open"] and last["Open"] > prev["Close"] and last["Close"] < prev["Open"]
+
+def trade_scenarios(df, levels, sh, sl, eq, demand, supply, rsi, lookback=30):
+    last_close = df["Close"].iloc[-1]
+    scenario_long = ""
+    scenario_short = ""
+    # LONG
+    demand_zone = None
+    for d in reversed(demand):
+        if last_close >= d*0.98 and last_close <= d*1.015:
+            demand_zone = d
+            break
+    if demand_zone:
+        scenario_long += f"- Ingresso possibile su forte reazione bullish fra {demand_zone:.2f} e {last_close:.2f} con pin bar o engulfing bullish su timeframe bassi (5m/15m).\n"
+        scenario_long += f"- Target: {supply[-1]:.2f} (prima resistenza principale), poi {sh:.2f}.\n"
+        scenario_long += f"- Stop Loss: sotto area domanda ({demand_zone*0.98:.2f}) o swing low ({sl:.2f}).\n"
+        scenario_long += f"- Conferme: Volumi in aumento, RSI > 50, pattern double bottom o Quasimodo su tf inferiore.\n"
     else:
-        txt = f"🔴 **SETUP SHORT in zona FVG Supply**\n"
-        txt += f"• Entry: {entry:.4f} | TP: {tp:.4f} | SL: {sl:.4f}\n"
-        txt += f"• Rischio/Rendimento: {rr:.2f}\n"
-        if last_close > entry * 1.005: # prezzo lontano
-            txt += "🔸 Il prezzo è sopra la zona FVG: attendere un ritorno in area Supply per valutare uno SHORT.\n"
-        elif last_close < entry * 0.99:
-            txt += "🔸 Il prezzo è sotto la zona FVG: meglio attendere nuovi setup.\n"
-        else:
-            txt += "✅ Il prezzo è in zona FVG Supply: valuta ingresso SHORT, attendi conferma price action.\n"
-    txt += "\n⚠️ Ricorda: i segnali FVG sono più forti se confermati da volumi, oscillatori e price action."
+        scenario_long += "- Nessuna zona domanda attiva vicina. Attendere nuova occasione."
+
+    # SHORT
+    supply_zone = None
+    for s in supply[::-1]:
+        if last_close <= s*1.02 and last_close >= s*0.985:
+            supply_zone = s
+            break
+    if supply_zone:
+        scenario_short += f"- Ingresso possibile su rifiuto deciso da zona offerta {supply_zone:.2f} (engulfing ribassista, spike di volume, chiusura sotto zona).\n"
+        scenario_short += f"- Target: {demand[0]:.2f} (area domanda chiave).\n"
+        scenario_short += f"- Stop Loss: sopra area offerta ({supply_zone*1.02:.2f}) o swing high ({sh:.2f}).\n"
+        scenario_short += f"- Conferme: Volumi in aumento nel ribasso, RSI < 50, pattern double top su tf inferiore.\n"
+    else:
+        scenario_short += "- Nessuna zona offerta attiva vicina. Attendere nuova occasione."
+
+    return scenario_long, scenario_short
+
+def bias_change_levels(df, supply, demand, sh, sl):
+    # Bias bullish sopra la resistenza principale, bearish sotto supporto
+    return f"- Cambierei bias in bullish sopra {supply[-1]:.2f} con volumi e chiusura netta.\n- In bearish sotto {demand[0]:.2f} con conferme di rottura."
+
+def general_analysis(df, indicators, sh, sl, eq, supply, demand, rsi, macd, adx):
+    price = df["Close"].iloc[-1]
+    bull_indicators = [x for x,v in indicators.items() if v == "bullish"]
+    bear_indicators = [x for x,v in indicators.items() if v == "bearish"]
+    bias = "rialzista" if len(bull_indicators) > len(bear_indicators) else "ribassista"
+    txt = f"- La tendenza generale è ancora <b>{bias}</b>, con il prezzo attuale a <b>{price:.2f}</b> USD.\n"
+    if bull_indicators:
+        txt += f"- Indicatori tecnici principali bullish: {', '.join(bull_indicators)}\n"
+    if bear_indicators:
+        txt += f"- Indicatori tecnici principali bearish: {', '.join(bear_indicators)}\n"
+    txt += f"- Il prezzo si trova tra il punto più alto dell'ultimo swing ({sh:.2f}) e quello più basso ({sl:.2f}), con il livello di equilibrio in area {eq:.2f}.\n"
+    txt += "Questi livelli possono essere facilmente manipolati dai grandi operatori.\n"
     return txt
 
 if st.button("Scarica e analizza"):
@@ -180,140 +215,111 @@ if st.button("Scarica e analizza"):
         df = df.dropna()
 
         lookback = 30
-        swing_high = df["High"][-lookback:].max()
-        swing_low = df["Low"][-lookback:].min()
-        equilibrio = (swing_high + swing_low) / 2
-
-        fib_levels = get_fibonacci_levels(df, lookback=lookback)
+        fib_levels = get_fibonacci_levels(df, lookback)
+        sh, sl, eq = find_swing_high_low(df, lookback)
         fvg_zones = find_fvg(df[-lookback:])
-        entry_plan = suggest_entry_tp_sl(df, fvg_zones)
-        last_close = df["Close"].iloc[-1]
-        commentary = trade_commentary(entry_plan, last_close)
+        demand, supply = detect_demand_supply_zones(df, lookback)
+        key_levels = detect_resistances_supports(df, lookback)
+        quasimodo = detect_quasimodo(df, lookback)
+        is_bullish_engulf = pattern_bullish_engulfing(df[-3:])
+        is_bearish_engulf = pattern_bearish_engulfing(df[-3:])
 
-        vol_media = df["Volume"][-lookback:].mean()
-        spike = df["Volume"].iloc[-1] > 2 * vol_media
+        indicators = {
+            "MACD": "bullish" if df["MACD"].iloc[-1] > df["MACD_signal"].iloc[-1] else "bearish",
+            "RSI": "bullish" if df["RSI"].iloc[-1] > 50 else "bearish",
+            "Momentum": "bullish" if df["Momentum"].iloc[-1] > 0 else "bearish",
+            "PSAR": "bullish" if df["PSAR"].iloc[-1] < df["Close"].iloc[-1] else "bearish",
+            "ADX": "bullish" if df["ADX"].iloc[-1] > 20 and df["+DI"].iloc[-1] > df["-DI"].iloc[-1] else "bearish",
+            "MFI": "bullish" if df["MFI"].iloc[-1] < 60 else "bearish"
+        }
+        rsi = df["RSI"].iloc[-1]
+        macd = df["MACD"].iloc[-1]
+        adx = df["ADX"].iloc[-1]
 
-        liquidity_grab_up = (df["High"].iloc[-1] > swing_high) and (df["Close"].iloc[-1] < swing_high)
-        liquidity_grab_down = (df["Low"].iloc[-1] < swing_low) and (df["Close"].iloc[-1] > swing_low)
+        # Analisi generale
+        gen_analysis = general_analysis(df, indicators, sh, sl, eq, supply, demand, rsi, macd, adx)
 
-        liquidity_text = ""
-        if liquidity_grab_up:
-            liquidity_text += "- **Presa di liquidità sopra il massimo recente** (possibile manipolazione rialzista)\n"
-        if liquidity_grab_down:
-            liquidity_text += "- **Presa di liquidità sotto il minimo recente** (possibile manipolazione ribassista)\n"
-        if spike:
-            liquidity_text += "- **Volume anomalo rilevato nell’ultima candela**\n"
-        if not liquidity_text:
-            liquidity_text = "- Nessuna manipolazione/volume anomalo rilevato."
+        # Livelli chiave
+        key_levels_txt = "- Area di domanda sotto il prezzo: " + ", ".join([f"{x:.2f}" for x in demand]) + " (supporto chiave).\n"
+        key_levels_txt += "- Area di offerta sopra il prezzo: " + ", ".join([f"{x:.2f}" for x in supply]) + " (resistenza chiave).\n"
+        key_levels_txt += "- Altri livelli chiave: " + ", ".join([f"{x:.2f}" for x in key_levels]) + "\n"
+        key_levels_txt += "- Area di squilibrio rialzista tra {:.2f} e {:.2f} (se mantenuta, possibile rimbalzo).".format(eq - (sh-sl)*0.1, eq + (sh-sl)*0.1)
 
-        last = df.iloc[-1]
-        last_prev = df.iloc[-2]
-        bull_conds = [
-            last["MACD"] > last["MACD_signal"],
-            last["RSI"] > 55,
-            last["ADX"] > 20 and last["+DI"] > last["-DI"],
-            last["MFI"] < 60,
-            last["PSAR"] < last["Close"],
-            last["Momentum"] > last_prev["Momentum"]
-        ]
-        bear_conds = [
-            last["MACD"] < last["MACD_signal"],
-            last["RSI"] < 45,
-            last["ADX"] > 20 and last["+DI"] < last["-DI"],
-            last["MFI"] > 40,
-            last["PSAR"] > last["Close"],
-            last["Momentum"] < last_prev["Momentum"]
-        ]
-        if sum(bull_conds) >= 4:
-            trend = "📈 Rialzista"
-            signal = "🟢 **Acquisto** (BUY)"
-            signal_color = "#d3f9d8"
-        elif sum(bear_conds) >= 4:
-            trend = "📉 Ribassista"
-            signal = "🔴 **Vendita** (SELL)"
-            signal_color = "#ffd6d6"
-        else:
-            trend = "🔄 Laterale/Equilibrio"
-            signal = "🟡 **Attendere** (wait)"
-            signal_color = "#fffbc1"
+        # Scenari trade
+        scenario_long, scenario_short = trade_scenarios(df, key_levels, sh, sl, eq, demand, supply, rsi)
+        bias_change_txt = bias_change_levels(df, supply, demand, sh, sl)
 
-        last_close = last["Close"]
-        if "BUY" in signal:
-            take_profit = last_close * 1.03
-            stop_loss = last_close * 0.98
-        elif "SELL" in signal:
-            take_profit = last_close * 0.97
-            stop_loss = last_close * 1.02
-        else:
-            take_profit = np.nan
-            stop_loss = np.nan
+        # Conferme
+        conferme = []
+        if is_bullish_engulf:
+            conferme.append("Pin bar o engulfing bullish in zona chiave (long)")
+        if is_bearish_engulf:
+            conferme.append("Engulfing ribassista in zona chiave (short)")
+        if quasimodo:
+            conferme.append(f"Pattern {quasimodo} su timeframe inferiore")
+        if df["Volume"].iloc[-1] > df["Volume"][-lookback:].mean()*1.2:
+            conferme.append("Volume in aumento relativo all'impulso")
+        if rsi > 50:
+            conferme.append("RSI sopra 50 (long)")
+        elif rsi < 50:
+            conferme.append("RSI sotto 50 (short)")
 
-        # --- REPORT MIGLIORATO ---
         st.markdown(f"""
 <style>
-.bluebox {{
+.tgbox {{
     background-color:#eaf4fb;
     border-radius:8px;
     padding: 24px 22px;
     margin-bottom:16px;
-    font-size:18px;
+    font-size:19px;
     color:#08345c;
     border: 1.5px solid #b6d6f7;
 }}
-.critico {{
-    font-weight:bold;
-    color:#ef233c;
-}}
-.critico-swing {{
-    color:#08415c;
+.keybox {{
+    background-color:#f3f9f4;
+    border-radius:8px;
+    padding: 12px 15px;
+    margin-bottom:10px;
+    font-size:17px;
+    color:#0a3d1a;
+    border: 1.5px solid #bde0c6;
 }}
 </style>
 """, unsafe_allow_html=True)
 
         st.markdown(f"""
-<div class="bluebox">
-<h4>🔍 Valutazione Generale:</h4>
-<ul>
-<li>Il prezzo attuale di <b>{product_id}</b> è <b>{last_close:.4f} USD</b></li>
-<li>Timeframe: <b>{tf_label}</b></li>
-<li>Trend di fondo: <b>{trend}</b></li>
-<li>Segnale operativo: <b>{signal}</b></li>
-</ul>
-
-<h4>📈 Livelli critici osservati:</h4>
-<ul>
-<li>Swing High: <span class="critico-swing">{swing_high:.4f}</span></li>
-<li>Swing Low: <span class="critico-swing">{swing_low:.4f}</span></li>
-<li>Equilibrio: <span class="critico-swing">{equilibrio:.4f}</span></li>
-<li>Fibonacci: {" | ".join([f"{k}: {v:.2f}" for k, v in fib_levels.items()])}</li>
-</ul>
-<hr style="margin:14px 0;">
-<b>Zone di inversione & manipolazione:</b>
-<ul>
-<li>{liquidity_text.strip()}</li>
-</ul>
-<hr style="margin:14px 0;">
-<b>Operatività FVG supply/demand:</b>
+<div class="tgbox">
+<h4>🔍 Analisi generale avanzata</h4>
+{gen_analysis}
 <br>
-<pre style="background:#fff;padding:12px;border-radius:8px;font-size:15px">{commentary}</pre>
-<hr style="margin:14px 0;">
-<b>Indicatori chiave:</b>
+<hr>
+<h4>📊 Livelli critici:</h4>
+<div class="keybox">{key_levels_txt}</div>
+<h4>📈 Scenari di trade</h4>
+<b>🟢 Scenario LONG:</b><br>
+{scenario_long}
+<br>
+<b>🔴 Scenario SHORT:</b><br>
+{scenario_short}
+<br>
+<hr>
+<b>✏️ Cambiamento bias:</b><br>
+{bias_change_txt}
+<br>
+<hr>
+<b>📝 Conferme da attendere:</b><br>
 <ul>
-<li>RSI: {last['RSI']:.2f}</li>
-<li>Momentum: {last['Momentum']:.2f}</li>
-<li>PSAR: {last['PSAR']:.4f}</li>
-<li>ADX: {last['ADX']:.2f}</li>
-<li>MFI: {last['MFI']:.2f}</li>
-<li>MACD: {last['MACD']:.4f} / {last['MACD_signal']:.4f}</li>
+""" + "\n".join([f"<li>{c}</li>" for c in conferme]) + """
 </ul>
 </div>
 """, unsafe_allow_html=True)
 
-        st.markdown("<h4>📊 Grafico prezzi, Fibonacci, FVG e volumi</h4>", unsafe_allow_html=True)
+        st.markdown("<h4>📊 Grafico prezzi, livelli chiave e volumi</h4>", unsafe_allow_html=True)
         fig = go.Figure()
         fig.add_trace(go.Candlestick(
             x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name="Candles"
         ))
+        # Fibonacci
         color_map = {
             "0%": "purple", "23.6%": "blue", "38.2%": "teal", "50%": "orange",
             "61.8%": "green", "78.6%": "red", "100%": "black"
@@ -321,19 +327,21 @@ if st.button("Scarica e analizza"):
         for k, v in fib_levels.items():
             fig.add_hline(y=v, line_dash="dot", line_color=color_map.get(k, "gray"), annotation_text=f"Fib {k}")
 
+        # Domanda/offerta
+        for d in demand:
+            fig.add_hline(y=d, line_color="green", line_dash="dash", annotation_text="Domanda")
+        for s in supply:
+            fig.add_hline(y=s, line_color="red", line_dash="dash", annotation_text="Offerta")
+
+        # Swing
+        fig.add_hline(y=sh, line_color="blue", line_dash="dot", annotation_text="Swing High")
+        fig.add_hline(y=sl, line_color="blue", line_dash="dot", annotation_text="Swing Low")
+        fig.add_hline(y=eq, line_color="gray", line_dash="dot", annotation_text="Equilibrio")
+
+        # FVG
         for zona in fvg_zones:
-            color = "rgba(50,200,100,0.20)" if zona["type"] == "DEMAND" else "rgba(255,80,80,0.20)"
+            color = "rgba(50,200,100,0.12)" if zona["type"] == "DEMAND" else "rgba(255,80,80,0.12)"
             fig.add_vrect(x0=zona["start"], x1=zona["end"], y0=zona["y0"], y1=zona["y1"], fillcolor=color, line_width=0, annotation_text=zona["type"])
-
-        if entry_plan:
-            fig.add_hline(y=entry_plan["entry"], line=dict(color="blue", width=2), annotation_text="Entry FVG")
-            fig.add_hline(y=entry_plan["tp"], line=dict(color="green", dash="dash"), annotation_text="TP FVG")
-            fig.add_hline(y=entry_plan["sl"], line=dict(color="red", dash="dash"), annotation_text="SL FVG")
-
-        if not np.isnan(take_profit):
-            fig.add_hline(y=take_profit, line=dict(color="green", dash="dot"), annotation_text="Take Profit")
-        if not np.isnan(stop_loss):
-            fig.add_hline(y=stop_loss, line=dict(color="red", dash="dot"), annotation_text="Stop Loss")
 
         st.plotly_chart(fig, use_container_width=True)
 
