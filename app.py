@@ -9,7 +9,6 @@ import plotly.graph_objs as go
 st.set_page_config("Coinbase Advanced Crypto Analysis", layout="wide")
 st.title("🤖 Coinbase Crypto Advanced Report")
 
-# Scarica la lista delle coppie disponibili da Coinbase
 @st.cache_data(ttl=3600)
 def get_coinbase_products():
     url = "https://api.exchange.coinbase.com/products"
@@ -70,16 +69,61 @@ def get_fibonacci_levels(df, lookback=30):
     return levels
 
 def find_fvg(df):
-    # Lista di tuple (inizio, fine, tipo) dove tipo=SUPPLY/DEMAND
+    # Lista di dict con info zona
     fvg_zones = []
     for i in range(2, len(df)):
         # FVG Bullish (DEMAND): min corrente > max due barre fa
         if df["Low"].iloc[i] > df["High"].iloc[i - 2]:
-            fvg_zones.append((df.index[i-2], df.index[i], "DEMAND", df["High"].iloc[i-2], df["Low"].iloc[i]))
+            fvg_zones.append({
+                "start": df.index[i-2],
+                "end": df.index[i],
+                "type": "DEMAND",
+                "y0": df["High"].iloc[i-2],
+                "y1": df["Low"].iloc[i]
+            })
         # FVG Bearish (SUPPLY): max corrente < min due barre fa
         if df["High"].iloc[i] < df["Low"].iloc[i - 2]:
-            fvg_zones.append((df.index[i-2], df.index[i], "SUPPLY", df["Low"].iloc[i-2], df["High"].iloc[i]))
+            fvg_zones.append({
+                "start": df.index[i-2],
+                "end": df.index[i],
+                "type": "SUPPLY",
+                "y0": df["Low"].iloc[i-2],
+                "y1": df["High"].iloc[i]
+            })
     return fvg_zones
+
+def suggest_entry_tp_sl(df, fvg_zones):
+    # Cerca la FVG più vicina al close attuale (tra le ultime 10)
+    last_close = df["Close"].iloc[-1]
+    candidates = []
+    for zona in fvg_zones[-10:]:
+        if zona["type"] == "DEMAND" and (zona["y0"] <= last_close <= zona["y1"] or zona["y1"] <= last_close <= zona["y0"]):
+            direction = "LONG"
+            entry = min(zona["y0"], zona["y1"])
+            sl = entry - abs(zona["y1"]-zona["y0"])
+            tp = entry + 2 * abs(zona["y1"]-zona["y0"])
+            candidates.append({"zona": zona, "direction": direction, "entry": entry, "tp": tp, "sl": sl})
+        elif zona["type"] == "SUPPLY" and (zona["y0"] >= last_close >= zona["y1"] or zona["y1"] >= last_close >= zona["y0"]):
+            direction = "SHORT"
+            entry = max(zona["y0"], zona["y1"])
+            sl = entry + abs(zona["y1"]-zona["y0"])
+            tp = entry - 2 * abs(zona["y1"]-zona["y0"])
+            candidates.append({"zona": zona, "direction": direction, "entry": entry, "tp": tp, "sl": sl})
+    # Se non c'è match, prendi la FVG più vicina in assoluto
+    if not candidates and fvg_zones:
+        fvg = min(fvg_zones, key=lambda z: min(abs(df["Close"].iloc[-1] - z["y0"]), abs(df["Close"].iloc[-1] - z["y1"])))
+        if fvg["type"] == "DEMAND":
+            direction = "LONG"
+            entry = min(fvg["y0"], fvg["y1"])
+            sl = entry - abs(fvg["y1"]-fvg["y0"])
+            tp = entry + 2 * abs(fvg["y1"]-fvg["y0"])
+        else:
+            direction = "SHORT"
+            entry = max(fvg["y0"], fvg["y1"])
+            sl = entry + abs(fvg["y1"]-fvg["y0"])
+            tp = entry - 2 * abs(fvg["y1"]-fvg["y0"])
+        return {"zona": fvg, "direction": direction, "entry": entry, "tp": tp, "sl": sl}
+    return candidates[0] if candidates else None
 
 if st.button("Scarica e analizza"):
     with st.spinner("Scarico dati da Coinbase..."):
@@ -90,7 +134,6 @@ if st.button("Scarica e analizza"):
             df = None
 
     if df is not None and len(df) > 20:
-        # Indicatori
         df["RSI"] = ta.momentum.rsi(df["Close"], window=14)
         df["MFI"] = ta.volume.money_flow_index(df["High"], df["Low"], df["Close"], df["Volume"], window=14)
         df["ADX"] = ta.trend.adx(df["High"], df["Low"], df["Close"], window=14)
@@ -103,23 +146,18 @@ if st.button("Scarica e analizza"):
         df["MACD_signal"] = ta.trend.macd_signal(df["Close"])
         df = df.dropna()
 
-        # Swing high/low
         lookback = 30
         swing_high = df["High"][-lookback:].max()
         swing_low = df["Low"][-lookback:].min()
         equilibrio = (swing_high + swing_low) / 2
 
-        # Fibonacci
         fib_levels = get_fibonacci_levels(df, lookback=lookback)
-
-        # FVG supply and demand
         fvg_zones = find_fvg(df[-lookback:])
+        entry_plan = suggest_entry_tp_sl(df, fvg_zones)
 
-        # Volumi
         vol_media = df["Volume"][-lookback:].mean()
         spike = df["Volume"].iloc[-1] > 2 * vol_media
 
-        # Manipolazione
         liquidity_grab_up = (df["High"].iloc[-1] > swing_high) and (df["Close"].iloc[-1] < swing_high)
         liquidity_grab_down = (df["Low"].iloc[-1] < swing_low) and (df["Close"].iloc[-1] > swing_low)
 
@@ -133,7 +171,6 @@ if st.button("Scarica e analizza"):
         if not liquidity_text:
             liquidity_text = "- Nessuna manipolazione/volume anomalo rilevato."
 
-        # Trend e segnali
         last = df.iloc[-1]
         last_prev = df.iloc[-2]
         bull_conds = [
@@ -173,7 +210,14 @@ if st.button("Scarica e analizza"):
             take_profit = np.nan
             stop_loss = np.nan
 
-        # Report
+        # Report su FVG entry plan
+        if entry_plan:
+            fvg_descr = f"Zona FVG {'DEMAND' if entry_plan['direction']=='LONG' else 'SUPPLY'}"
+            fvg_descr += f" ({entry_plan['zona']['start'].strftime('%Y-%m-%d %H:%M')} &rarr; {entry_plan['zona']['end'].strftime('%Y-%m-%d %H:%M')})"
+            fvg_descr += f"\n- **{entry_plan['direction']} ENTRY**: {entry_plan['entry']:.2f}\n- **Take Profit**: {entry_plan['tp']:.2f}\n- **Stop Loss**: {entry_plan['sl']:.2f}"
+        else:
+            fvg_descr = "Nessuna zona FVG vicina/attiva per un ingresso immediato."
+
         report = f"""
 🔍 **Valutazione Generale:**
 
@@ -193,11 +237,9 @@ if st.button("Scarica e analizza"):
 """ + liquidity_text + """
 
 ---
-**Zone FVG supply/demand (ultime 30 barre):**
-""" + ("\n".join([
-    f"- {zona}: da {df.index.get_loc(start)} a {df.index.get_loc(end)}, prezzi {p1:.2f}→{p2:.2f}"
-    for start, end, zona, p1, p2 in fvg_zones
-]) if fvg_zones else "- Nessuna FVG rilevata") + """
+**Operatività FVG supply/demand:**
+
+""" + fvg_descr + """
 
 ---
 **Indicatori chiave:**
@@ -218,7 +260,6 @@ if st.button("Scarica e analizza"):
         fig.add_trace(go.Candlestick(
             x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name="Candles"
         ))
-        # Fibonacci levels
         color_map = {
             "0%": "purple", "23.6%": "blue", "38.2%": "teal", "50%": "orange",
             "61.8%": "green", "78.6%": "red", "100%": "black"
@@ -226,20 +267,26 @@ if st.button("Scarica e analizza"):
         for k, v in fib_levels.items():
             fig.add_hline(y=v, line_dash="dot", line_color=color_map.get(k, "gray"), annotation_text=f"Fib {k}")
 
-        # FVG supply/demand
-        for start, end, zona, p1, p2 in fvg_zones:
-            color = "rgba(50,200,100,0.2)" if zona == "DEMAND" else "rgba(255,80,80,0.2)"
-            fig.add_vrect(x0=start, x1=end, y0=p1, y1=p2, fillcolor=color, line_width=0, annotation_text=zona)
+        # FVG supply/demand (con label)
+        for zona in fvg_zones:
+            color = "rgba(50,200,100,0.2)" if zona["type"] == "DEMAND" else "rgba(255,80,80,0.2)"
+            fig.add_vrect(x0=zona["start"], x1=zona["end"], y0=zona["y0"], y1=zona["y1"], fillcolor=color, line_width=0, annotation_text=zona["type"])
 
-        # TP/SL
+        # Mostra TP/SL/ENTRY della FVG attiva
+        if entry_plan:
+            fig.add_hline(y=entry_plan["entry"], line=dict(color="blue", width=2), annotation_text="Entry FVG")
+            fig.add_hline(y=entry_plan["tp"], line=dict(color="green", dash="dash"), annotation_text="TP FVG")
+            fig.add_hline(y=entry_plan["sl"], line=dict(color="red", dash="dash"), annotation_text="SL FVG")
+
+        # TP/SL generici
         if not np.isnan(take_profit):
-            fig.add_hline(y=take_profit, line=dict(color="green", dash="dash"), annotation_text="Take Profit")
+            fig.add_hline(y=take_profit, line=dict(color="green", dash="dot"), annotation_text="Take Profit")
         if not np.isnan(stop_loss):
-            fig.add_hline(y=stop_loss, line=dict(color="red", dash="dash"), annotation_text="Stop Loss")
+            fig.add_hline(y=stop_loss, line=dict(color="red", dash="dot"), annotation_text="Stop Loss")
+
         st.plotly_chart(fig, use_container_width=True)
 
-        # Volumi
-        st.subheader("📈 Volumi e dati indicatori")
+        st.subheader("📈 Volumi e ultimi dati")
         st.line_chart(df["Volume"])
         st.dataframe(df.tail(20))
 
