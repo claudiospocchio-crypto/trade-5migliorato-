@@ -66,29 +66,7 @@ def get_fibonacci_levels(df, lookback=30):
         "100%": lowest
     }
     return levels
-    def operative_levels(df, demand, supply, last_close, atr_window=14, sl_atr_mult=1, tp_rr=2):
-    # ATR come base per SL/TP (più robusto dei tick fissi)
-    df["ATR"] = ta.volatility.average_true_range(df["High"], df["Low"], df["Close"], window=atr_window)
-    atr = df["ATR"].iloc[-1]
-    ops = []
-    # LONG
-    if demand:
-        entry = max(demand)
-        sl = entry - sl_atr_mult * atr
-        # TP primo livello resistenza sopra entry
-        tp_candidates = [s for s in supply if s > entry+0.5*atr]
-        tp = min(tp_candidates) if tp_candidates else entry + tp_rr * (entry - sl)
-        rr = (tp - entry) / (entry - sl) if (entry - sl) > 0 else None
-        ops.append({"side":"LONG","entry":entry,"tp":tp,"sl":sl,"rr":rr})
-    # SHORT
-    if supply:
-        entry = min(supply)
-        sl = entry + sl_atr_mult * atr
-        tp_candidates = [d for d in demand if d < entry-0.5*atr]
-        tp = max(tp_candidates) if tp_candidates else entry - tp_rr * (sl - entry)
-        rr = (entry - tp) / (sl - entry) if (sl - entry) > 0 else None
-        ops.append({"side":"SHORT","entry":entry,"tp":tp,"sl":sl,"rr":rr})
-    return ops
+
 def find_swing_high_low(df, lookback=30):
     sh = df["High"][-lookback:].max()
     sl = df["Low"][-lookback:].min()
