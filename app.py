@@ -4,9 +4,10 @@ import numpy as np
 import requests
 import ta
 from ta.trend import PSARIndicator
+import plotly.graph_objs as go
 
-st.set_page_config("Coinbase Crypto Analysis", layout="wide")
-st.title("🤖 Coinbase Crypto Report (multi-timeframe)")
+st.set_page_config("Coinbase Advanced Crypto Analysis", layout="wide")
+st.title("🤖 Coinbase Crypto Advanced Report")
 
 # Scarica la lista delle coppie disponibili da Coinbase
 @st.cache_data(ttl=3600)
@@ -14,21 +15,16 @@ def get_coinbase_products():
     url = "https://api.exchange.coinbase.com/products"
     resp = requests.get(url)
     data = resp.json()
-    # Prendi solo le coppie contro USD
     pairs = [p["id"] for p in data if p["quote_currency"] == "USD" and p["trading_disabled"] is False]
     return sorted(pairs)
 
 coin_pairs = get_coinbase_products()
 search = st.text_input("Cerca simbolo crypto (es: BTC, ETH, SHIB...)", "")
-if search:
-    filtered_pairs = [c for c in coin_pairs if search.upper() in c]
-else:
-    filtered_pairs = coin_pairs
+filtered_pairs = [c for c in coin_pairs if search.upper() in c] if search else coin_pairs
 if not filtered_pairs:
     st.warning("Nessuna crypto trovata per la ricerca inserita.")
 product_id = st.selectbox("Scegli coppia Coinbase", filtered_pairs, index=0 if filtered_pairs else None)
 
-# SOLO granularità supportate da Coinbase
 _tf_map = {
     "1 minuto": 60,
     "5 minuti": 300,
@@ -44,10 +40,7 @@ n_candles = st.slider("Quante candele di storico?", min_value=30, max_value=300,
 
 def get_coinbase_ohlc(product_id, granularity, n_candles):
     url = f"https://api.exchange.coinbase.com/products/{product_id}/candles"
-    params = {
-        "granularity": granularity,
-        "limit": n_candles
-    }
+    params = {"granularity": granularity, "limit": n_candles}
     resp = requests.get(url, params=params)
     if resp.status_code != 200:
         raise Exception(f"Errore Coinbase API: {resp.text}")
@@ -60,6 +53,33 @@ def get_coinbase_ohlc(product_id, granularity, n_candles):
     df.columns = ["Open", "High", "Low", "Close", "Volume"]
     df = df.astype(float)
     return df
+
+def get_fibonacci_levels(df, lookback=30):
+    highest = df["High"][-lookback:].max()
+    lowest = df["Low"][-lookback:].min()
+    diff = highest - lowest
+    levels = {
+        "0%": highest,
+        "23.6%": highest - 0.236 * diff,
+        "38.2%": highest - 0.382 * diff,
+        "50%": highest - 0.5 * diff,
+        "61.8%": highest - 0.618 * diff,
+        "78.6%": highest - 0.786 * diff,
+        "100%": lowest
+    }
+    return levels
+
+def find_fvg(df):
+    # Lista di tuple (inizio, fine, tipo) dove tipo=SUPPLY/DEMAND
+    fvg_zones = []
+    for i in range(2, len(df)):
+        # FVG Bullish (DEMAND): min corrente > max due barre fa
+        if df["Low"].iloc[i] > df["High"].iloc[i - 2]:
+            fvg_zones.append((df.index[i-2], df.index[i], "DEMAND", df["High"].iloc[i-2], df["Low"].iloc[i]))
+        # FVG Bearish (SUPPLY): max corrente < min due barre fa
+        if df["High"].iloc[i] < df["Low"].iloc[i - 2]:
+            fvg_zones.append((df.index[i-2], df.index[i], "SUPPLY", df["Low"].iloc[i-2], df["High"].iloc[i]))
+    return fvg_zones
 
 if st.button("Scarica e analizza"):
     with st.spinner("Scarico dati da Coinbase..."):
@@ -76,7 +96,6 @@ if st.button("Scarica e analizza"):
         df["ADX"] = ta.trend.adx(df["High"], df["Low"], df["Close"], window=14)
         df["+DI"] = ta.trend.adx_pos(df["High"], df["Low"], df["Close"], window=14)
         df["-DI"] = ta.trend.adx_neg(df["High"], df["Low"], df["Close"], window=14)
-        # PSAR
         psar = PSARIndicator(high=df["High"], low=df["Low"], close=df["Close"])
         df["PSAR"] = psar.psar()
         df["Momentum"] = ta.momentum.roc(df["Close"], window=10)
@@ -84,27 +103,26 @@ if st.button("Scarica e analizza"):
         df["MACD_signal"] = ta.trend.macd_signal(df["Close"])
         df = df.dropna()
 
-        # Individua swing high/low e zone di inversione
+        # Swing high/low
         lookback = 30
         swing_high = df["High"][-lookback:].max()
         swing_low = df["Low"][-lookback:].min()
         equilibrio = (swing_high + swing_low) / 2
 
-        # Individua prese di liquidità/manipolazione
-        liquidity_grab_up = (
-            (df["High"].iloc[-1] > swing_high) and
-            (df["Close"].iloc[-1] < swing_high)
-        )
-        liquidity_grab_down = (
-            (df["Low"].iloc[-1] < swing_low) and
-            (df["Close"].iloc[-1] > swing_low)
-        )
+        # Fibonacci
+        fib_levels = get_fibonacci_levels(df, lookback=lookback)
 
-        # Spike di volume
+        # FVG supply and demand
+        fvg_zones = find_fvg(df[-lookback:])
+
+        # Volumi
         vol_media = df["Volume"][-lookback:].mean()
         spike = df["Volume"].iloc[-1] > 2 * vol_media
 
-        # Testi zone manipolazione/inversione
+        # Manipolazione
+        liquidity_grab_up = (df["High"].iloc[-1] > swing_high) and (df["Close"].iloc[-1] < swing_high)
+        liquidity_grab_down = (df["Low"].iloc[-1] < swing_low) and (df["Close"].iloc[-1] > swing_low)
+
         liquidity_text = ""
         if liquidity_grab_up:
             liquidity_text += "- **Presa di liquidità sopra il massimo recente** (possibile manipolazione rialzista)\n"
@@ -144,7 +162,6 @@ if st.button("Scarica e analizza"):
             trend = "🔄 Laterale/Equilibrio"
             signal = "🟡 **Attendere** (wait)"
 
-        # Take Profit e Stop Loss
         last_close = last["Close"]
         if "BUY" in signal:
             take_profit = last_close * 1.03
@@ -156,88 +173,74 @@ if st.button("Scarica e analizza"):
             take_profit = np.nan
             stop_loss = np.nan
 
-        # Livelli swing per il report
-        last_high = swing_high
-        last_low = swing_low
-        last_eq = equilibrio
-
         # Report
         report = f"""
 🔍 **Valutazione Generale:**
 
 - Il prezzo attuale di **{product_id}** è **{last_close:.4f} USD**
 - Timeframe: **{tf_label}**
-- Il trend di fondo è: **{trend}**
-- La maggior parte degli indicatori principali (MACD, Momentum, RSI, PSAR, ADX, MFI) sono orientati a {'rialzo' if sum(bull_conds) >= 4 else 'ribasso' if sum(bear_conds) >= 4 else 'equilibrio'}.
-- Attuale segnale operativo: {signal}
+- Trend di fondo: **{trend}**
+- Segnale operativo: {signal}
 
 📈 **Livelli critici osservati:**
-- Massimo swing recente: {last_high:.4f}
-- Minimo swing recente: {last_low:.4f}
-- Area di equilibrio: {last_eq:.4f}
+- Swing High: {swing_high:.4f}
+- Swing Low: {swing_low:.4f}
+- Equilibrio: {equilibrio:.4f}
+- Fibonacci: """ + " | ".join([f"{k}: {v:.2f}" for k, v in fib_levels.items()]) + """
 
-🎯 **Strategia consigliata:**  
-"""
-        if "BUY" in signal:
-            report += f"- Compra ora, Take Profit a {take_profit:.4f}, Stop Loss a {stop_loss:.4f}\n"
-        elif "SELL" in signal:
-            report += f"- Vendi ora, Take Profit a {take_profit:.4f}, Stop Loss a {stop_loss:.4f}\n"
-        else:
-            report += "- Attendere: non ci sono condizioni forti per entrare ora.\n"
+---
+**Zone di inversione & manipolazione:**
+""" + liquidity_text + """
 
-        # Extra dettagli indicatori
-        report += f"""
+---
+**Zone FVG supply/demand (ultime 30 barre):**
+""" + ("\n".join([
+    f"- {zona}: da {df.index.get_loc(start)} a {df.index.get_loc(end)}, prezzi {p1:.2f}→{p2:.2f}"
+    for start, end, zona, p1, p2 in fvg_zones
+]) if fvg_zones else "- Nessuna FVG rilevata") + """
+
 ---
 **Indicatori chiave:**
-- RSI: {last['RSI']:.2f}
-- Momentum: {last['Momentum']:.2f}
-- PSAR: {last['PSAR']:.4f}
-- ADX: {last['ADX']:.2f}
-- MFI: {last['MFI']:.2f}
-- MACD: {last['MACD']:.4f} / {last['MACD_signal']:.4f}
-"""
-
-        # Zone inversione/manipolazione/volumi
-        report += f"""\n
-🔍 **Zone di inversione & manipolazione:**
-{liquidity_text}
-"""
-
+- RSI: {rsi:.2f}
+- Momentum: {mom:.2f}
+- PSAR: {psar:.4f}
+- ADX: {adx:.2f}
+- MFI: {mfi:.2f}
+- MACD: {macd:.4f} / {macdsig:.4f}
+""".format(
+    rsi=last["RSI"], mom=last["Momentum"], psar=last["PSAR"], adx=last["ADX"],
+    mfi=last["MFI"], macd=last["MACD"], macdsig=last["MACD_signal"]
+)
         st.info(report)
 
-        st.subheader("📊 Grafico prezzi, swing, inversioni e volumi anomali")
-        import plotly.graph_objs as go
+        st.subheader("📊 Grafico prezzi, Fibonacci, FVG e volumi")
         fig = go.Figure()
         fig.add_trace(go.Candlestick(
             x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name="Candles"
         ))
-        # Swing levels
-        fig.add_hline(y=last_high, line_dash="dot", annotation_text="Swing High", opacity=0.6)
-        fig.add_hline(y=last_low, line_dash="dot", annotation_text="Swing Low", opacity=0.6)
-        fig.add_hline(y=last_eq, line_dash="dot", annotation_text="Equilibrio", opacity=0.5)
+        # Fibonacci levels
+        color_map = {
+            "0%": "purple", "23.6%": "blue", "38.2%": "teal", "50%": "orange",
+            "61.8%": "green", "78.6%": "red", "100%": "black"
+        }
+        for k, v in fib_levels.items():
+            fig.add_hline(y=v, line_dash="dot", line_color=color_map.get(k, "gray"), annotation_text=f"Fib {k}")
+
+        # FVG supply/demand
+        for start, end, zona, p1, p2 in fvg_zones:
+            color = "rgba(50,200,100,0.2)" if zona == "DEMAND" else "rgba(255,80,80,0.2)"
+            fig.add_vrect(x0=start, x1=end, y0=p1, y1=p2, fillcolor=color, line_width=0, annotation_text=zona)
+
         # TP/SL
         if not np.isnan(take_profit):
             fig.add_hline(y=take_profit, line=dict(color="green", dash="dash"), annotation_text="Take Profit")
         if not np.isnan(stop_loss):
             fig.add_hline(y=stop_loss, line=dict(color="red", dash="dash"), annotation_text="Stop Loss")
-        # Marker per manipolazione/volume spike
-        shapes = []
-        if liquidity_grab_up:
-            shapes.append(dict(type="circle", xref="x", yref="y",
-                              x0=df.index[-1], x1=df.index[-1], y0=df["High"].iloc[-1], y1=df["High"].iloc[-1]+(last_high*0.01),
-                              line_color="blue", fillcolor="blue"))
-        if liquidity_grab_down:
-            shapes.append(dict(type="circle", xref="x", yref="y",
-                              x0=df.index[-1], x1=df.index[-1], y0=df["Low"].iloc[-1]-last_low*0.01, y1=df["Low"].iloc[-1],
-                              line_color="orange", fillcolor="orange"))
-        if spike:
-            shapes.append(dict(type="circle", xref="x", yref="y",
-                              x0=df.index[-1], x1=df.index[-1], y0=last_close, y1=last_close + last_close*0.01,
-                              line_color="red", fillcolor="red"))
-        fig.update_layout(shapes=shapes)
         st.plotly_chart(fig, use_container_width=True)
 
-        st.subheader("📈 Ultimi dati & indicatori")
+        # Volumi
+        st.subheader("📈 Volumi e dati indicatori")
+        st.line_chart(df["Volume"])
         st.dataframe(df.tail(20))
 
     else:
