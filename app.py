@@ -6,7 +6,7 @@ import ta
 from ta.trend import PSARIndicator
 import plotly.graph_objs as go
 
-st.set_page_config("Coinbase Advanced Crypto Analysis", layout="wide")
+st.set_page_config("Coinbase Crypto Advanced Report", layout="wide")
 st.title("🤖 Coinbase Crypto Advanced Report")
 
 @st.cache_data(ttl=3600)
@@ -24,14 +24,12 @@ if not filtered_pairs:
     st.warning("Nessuna crypto trovata per la ricerca inserita.")
 product_id = st.selectbox("Scegli coppia Coinbase", filtered_pairs, index=0 if filtered_pairs else None)
 
+# SOLO granularità realmente supportate da Coinbase!
 _tf_map = {
     "1 minuto": 60,
     "5 minuti": 300,
     "15 minuti": 900,
-    "30 minuti": 1800,
     "1 ora": 3600,
-    "2 ore": 7200,
-    "4 ore": 14400,
     "6 ore": 21600,
     "1 giorno": 86400
 }
